@@ -870,14 +870,6 @@ class Builder extends BaseBuilder
      */
     public function convertKey($id)
     {
-        if (is_string($id) && strlen($id) === 24 && ctype_xdigit($id)) {
-            return new ObjectID($id);
-        }
-
-        if (is_string($id) && strlen($id) === 16 && preg_match('~[^\x20-\x7E\t\r\n]~', $id) > 0) {
-            return new Binary($id, Binary::TYPE_UUID);
-        }
-
         return $id;
     }
 
