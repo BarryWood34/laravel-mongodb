@@ -41,7 +41,7 @@ class EmbedsMany extends EmbedsOneOrMany
     {
         // Generate a new key if needed.
         if ($model->getKeyName() == '_id' && ! $model->getKey()) {
-            $model->setAttribute('_id', new ObjectID);
+            $model->setAttribute('_id', (string) new ObjectID);
         }
 
         // For deeply nested documents, let the parent handle the changes.
@@ -239,7 +239,7 @@ class EmbedsMany extends EmbedsOneOrMany
     {
         // Create a new key if needed.
         if ($model->getKeyName() === '_id' && ! $model->getAttribute('_id')) {
-            $model->setAttribute('_id', new ObjectID);
+            $model->setAttribute('_id', (string) new ObjectID);
         }
 
         $records = $this->getEmbedded();
