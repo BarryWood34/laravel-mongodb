@@ -593,6 +593,11 @@ class Builder extends BaseBuilder
     {
         $result = $this->collection->insertOne($values);
 
+        if (app()->environment('testing'))
+        {
+            new Rollback($this->collection->getCollectionName(), 'create', [ $result->getInsertedId() ]);
+        }
+
         if (1 == (int) $result->isAcknowledged()) {
             if ($sequence === null) {
                 $sequence = '_id';
@@ -853,9 +858,20 @@ class Builder extends BaseBuilder
             $options['multiple'] = true;
         }
 
+        if (app()->environment('testing'))
+        {
+            $idsForRollback = $this->getFresh(['_id'])->pluck('_id')->toArray();
+        }
+
         $wheres = $this->compileWheres();
         $result = $this->collection->UpdateMany($wheres, $query, $options);
         if (1 == (int) $result->isAcknowledged()) {
+
+            if (app()->environment('testing'))
+            {
+                new Rollback($this->collection->getCollectionName(), 'update', $idsForRollback);
+            }
+
             return $result->getModifiedCount() ? $result->getModifiedCount() : $result->getUpsertedCount();
         }
 
