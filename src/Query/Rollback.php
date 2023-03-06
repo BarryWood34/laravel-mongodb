@@ -32,15 +32,8 @@ class Rollback
 
     private function prepareNewOplog(): array
     {
-        if ( $this->operation === 'update' )
-        {
-            $result['update'][] = [ $this->collection, $this->ids ];
-        }
-        elseif ( $this->operation === 'create' )
-        {
-            $result['create'][] = [ $this->collection, $this->ids ];
-        }
+        $result[$this->operation][] = [ $this->collection, $this->ids ];
 
-        return $result ?? [];
+        return $result;
     }
 }
