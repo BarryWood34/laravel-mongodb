@@ -1,12 +1,22 @@
 <?php
 
-namespace Jenssegers\Mongodb\Eloquent;
+declare(strict_types=1);
 
+namespace MongoDB\Laravel\Eloquent;
+
+use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
-use Jenssegers\Mongodb\Helpers\QueriesRelationships;
 use MongoDB\Driver\Cursor;
+use MongoDB\Laravel\Helpers\QueriesRelationships;
 use MongoDB\Model\BSONDocument;
 
+use function array_key_exists;
+use function array_merge;
+use function collect;
+use function is_array;
+use function iterator_to_array;
+
+/** @method \MongoDB\Laravel\Query\Builder toBase() */
 class Builder extends EloquentBuilder
 {
     use QueriesRelationships;
@@ -21,16 +31,16 @@ class Builder extends EloquentBuilder
         'avg',
         'count',
         'dd',
-        'doesntExist',
+        'doesntexist',
         'dump',
         'exists',
-        'getBindings',
-        'getConnection',
-        'getGrammar',
+        'getbindings',
+        'getconnection',
+        'getgrammar',
         'insert',
-        'insertGetId',
-        'insertOrIgnore',
-        'insertUsing',
+        'insertgetid',
+        'insertorignore',
+        'insertusing',
         'max',
         'min',
         'pluck',
@@ -38,17 +48,16 @@ class Builder extends EloquentBuilder
         'push',
         'raw',
         'sum',
-        'toSql',
+        'tomql',
     ];
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function update(array $values, array $options = [])
     {
         // Intercept operations on embedded models and delegate logic
         // to the parent relation instance.
-        if ($relation = $this->model->getParentRelation()) {
+        $relation = $this->model->getParentRelation();
+        if ($relation) {
             $relation->performUpdate($this->model, $values);
 
             return 1;
@@ -57,14 +66,13 @@ class Builder extends EloquentBuilder
         return $this->toBase()->update($this->addUpdatedAtColumn($values), $options);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function insert(array $values)
     {
         // Intercept operations on embedded models and delegate logic
         // to the parent relation instance.
-        if ($relation = $this->model->getParentRelation()) {
+        $relation = $this->model->getParentRelation();
+        if ($relation) {
             $relation->performInsert($this->model, $values);
 
             return true;
@@ -73,14 +81,13 @@ class Builder extends EloquentBuilder
         return parent::insert($values);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function insertGetId(array $values, $sequence = null)
     {
         // Intercept operations on embedded models and delegate logic
         // to the parent relation instance.
-        if ($relation = $this->model->getParentRelation()) {
+        $relation = $this->model->getParentRelation();
+        if ($relation) {
             $relation->performInsert($this->model, $values);
 
             return $this->model->getKey();
@@ -89,14 +96,13 @@ class Builder extends EloquentBuilder
         return parent::insertGetId($values, $sequence);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function delete()
     {
         // Intercept operations on embedded models and delegate logic
         // to the parent relation instance.
-        if ($relation = $this->model->getParentRelation()) {
+        $relation = $this->model->getParentRelation();
+        if ($relation) {
             $relation->performDelete($this->model);
 
             return $this->model->getKey();
@@ -105,14 +111,13 @@ class Builder extends EloquentBuilder
         return parent::delete();
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function increment($column, $amount = 1, array $extra = [])
     {
         // Intercept operations on embedded models and delegate logic
         // to the parent relation instance.
-        if ($relation = $this->model->getParentRelation()) {
+        $relation = $this->model->getParentRelation();
+        if ($relation) {
             $value = $this->model->{$column};
 
             // When doing increment and decrements, Eloquent will automatically
@@ -122,22 +127,19 @@ class Builder extends EloquentBuilder
 
             $this->model->syncOriginalAttribute($column);
 
-            $result = $this->model->update([$column => $value]);
-
-            return $result;
+            return $this->model->update([$column => $value]);
         }
 
         return parent::increment($column, $amount, $extra);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function decrement($column, $amount = 1, array $extra = [])
     {
         // Intercept operations on embedded models and delegate logic
         // to the parent relation instance.
-        if ($relation = $this->model->getParentRelation()) {
+        $relation = $this->model->getParentRelation();
+        if ($relation) {
             $value = $this->model->{$column};
 
             // When doing increment and decrements, Eloquent will automatically
@@ -153,34 +155,28 @@ class Builder extends EloquentBuilder
         return parent::decrement($column, $amount, $extra);
     }
 
-    /**
-     * @inheritdoc
-     */
-    public function chunkById($count, callable $callback, $column = '_id', $alias = null)
-    {
-        return parent::chunkById($count, $callback, $column, $alias);
-    }
-
-    /**
-     * @inheritdoc
-     */
-    public function raw($expression = null)
+    /** @inheritdoc */
+    public function raw($value = null)
     {
         // Get raw results from the query builder.
-        $results = $this->query->raw($expression);
+        $results = $this->query->raw($value);
 
         // Convert MongoCursor results to a collection of models.
         if ($results instanceof Cursor) {
             $results = iterator_to_array($results, false);
 
             return $this->model->hydrate($results);
-        } // Convert Mongo BSONDocument to a single object.
-        elseif ($results instanceof BSONDocument) {
+        }
+
+        // Convert MongoDB BSONDocument to a single object.
+        if ($results instanceof BSONDocument) {
             $results = $results->getArrayCopy();
 
             return $this->model->newFromBuilder((array) $results);
-        } // The result is a single object.
-        elseif (is_array($results) && array_key_exists('_id', $results)) {
+        }
+
+        // The result is a single object.
+        if (is_array($results) && array_key_exists('_id', $results)) {
             return $this->model->newFromBuilder((array) $results);
         }
 
@@ -190,9 +186,9 @@ class Builder extends EloquentBuilder
     /**
      * Add the "updated at" column to an array of values.
      * TODO Remove if https://github.com/laravel/framework/commit/6484744326531829341e1ff886cc9b628b20d73e
-     * wiil be reverted
-     * Issue in laravel frawework https://github.com/laravel/framework/issues/27791.
-     * @param array $values
+     * will be reverted
+     * Issue in laravel/frawework https://github.com/laravel/framework/issues/27791.
+     *
      * @return array
      */
     protected function addUpdatedAtColumn(array $values)
@@ -204,23 +200,19 @@ class Builder extends EloquentBuilder
         $column = $this->model->getUpdatedAtColumn();
         $values = array_merge(
             [$column => $this->model->freshTimestampString()],
-            $values
+            $values,
         );
 
         return $values;
     }
 
-    /**
-     * @return \Illuminate\Database\ConnectionInterface
-     */
+    /** @return ConnectionInterface */
     public function getConnection()
     {
         return $this->query->getConnection();
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     protected function ensureOrderForCursorPagination($shouldReverse = false)
     {
         if (empty($this->query->orders)) {
@@ -228,16 +220,15 @@ class Builder extends EloquentBuilder
         }
 
         if ($shouldReverse) {
-            $this->query->orders = collect($this->query->orders)->map(function ($direction) {
-                return $direction === 1 ? -1 : 1;
-            })->toArray();
+            $this->query->orders = collect($this->query->orders)
+                ->map(static fn (int $direction) => $direction === 1 ? -1 : 1)
+                ->toArray();
         }
 
-        return collect($this->query->orders)->map(function ($direction, $column) {
-            return [
+        return collect($this->query->orders)
+            ->map(static fn ($direction, $column) => [
                 'column' => $column,
                 'direction' => $direction === 1 ? 'asc' : 'desc',
-            ];
-        })->values();
+            ])->values();
     }
 }

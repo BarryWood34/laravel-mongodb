@@ -2,7 +2,22 @@
 
 declare(strict_types=1);
 
+namespace MongoDB\Laravel\Tests;
+
 use Illuminate\Database\Eloquent\Collection;
+use Mockery;
+use MongoDB\BSON\ObjectId;
+use MongoDB\Laravel\Tests\Models\Address;
+use MongoDB\Laravel\Tests\Models\Book;
+use MongoDB\Laravel\Tests\Models\Client;
+use MongoDB\Laravel\Tests\Models\Group;
+use MongoDB\Laravel\Tests\Models\Item;
+use MongoDB\Laravel\Tests\Models\Label;
+use MongoDB\Laravel\Tests\Models\Photo;
+use MongoDB\Laravel\Tests\Models\Role;
+use MongoDB\Laravel\Tests\Models\Skill;
+use MongoDB\Laravel\Tests\Models\Soft;
+use MongoDB\Laravel\Tests\Models\User;
 
 class RelationsTest extends TestCase
 {
@@ -16,9 +31,10 @@ class RelationsTest extends TestCase
         Book::truncate();
         Item::truncate();
         Role::truncate();
-        Client::truncate();
         Group::truncate();
         Photo::truncate();
+        Label::truncate();
+        Skill::truncate();
     }
 
     public function testHasMany(): void
@@ -38,6 +54,24 @@ class RelationsTest extends TestCase
 
         $items = $user->items;
         $this->assertCount(3, $items);
+    }
+
+    public function testHasManyWithTrashed(): void
+    {
+        $user   = User::create(['name' => 'George R. R. Martin']);
+        $first  = Soft::create(['title' => 'A Game of Thrones', 'user_id' => $user->_id]);
+        $second = Soft::create(['title' => 'The Witcher', 'user_id' => $user->_id]);
+
+        self::assertNull($first->deleted_at);
+        self::assertEquals($user->_id, $first->user->_id);
+        self::assertEquals([$first->_id, $second->_id], $user->softs->pluck('_id')->toArray());
+
+        $first->delete();
+        $user->refresh();
+
+        self::assertNotNull($first->deleted_at);
+        self::assertEquals([$second->_id], $user->softs->pluck('_id')->toArray());
+        self::assertEquals([$first->_id, $second->_id], $user->softsWithTrashed->pluck('_id')->toArray());
     }
 
     public function testBelongsTo(): void
@@ -134,7 +168,7 @@ class RelationsTest extends TestCase
         $item = Item::create(['type' => 'knife']);
         $user->items()->save($item);
 
-        $user = User::find($user->_id);
+        $user  = User::find($user->_id);
         $items = $user->items;
         $this->assertCount(1, $items);
         $this->assertInstanceOf(Item::class, $items[0]);
@@ -161,7 +195,7 @@ class RelationsTest extends TestCase
         $user->clients()->create(['name' => 'Buffet Bar Inc.']);
 
         // Refetch
-        $user = User::with('clients')->find($user->_id);
+        $user   = User::with('clients')->find($user->_id);
         $client = Client::with('users')->first();
 
         // Check for relation attributes
@@ -169,7 +203,7 @@ class RelationsTest extends TestCase
         $this->assertArrayHasKey('client_ids', $user->getAttributes());
 
         $clients = $user->getRelation('clients');
-        $users = $client->getRelation('users');
+        $users   = $client->getRelation('users');
 
         $this->assertInstanceOf(Collection::class, $users);
         $this->assertInstanceOf(Collection::class, $clients);
@@ -186,7 +220,7 @@ class RelationsTest extends TestCase
         $this->assertCount(1, $user->clients);
 
         // Get user and unattached client
-        $user = User::where('name', '=', 'Jane Doe')->first();
+        $user   = User::where('name', '=', 'Jane Doe')->first();
         $client = Client::Where('name', '=', 'Buffet Bar Inc.')->first();
 
         // Check the models are what they should be
@@ -203,7 +237,7 @@ class RelationsTest extends TestCase
         $user->clients()->attach($client);
 
         // Get the new user model
-        $user = User::where('name', '=', 'Jane Doe')->first();
+        $user   = User::where('name', '=', 'Jane Doe')->first();
         $client = Client::Where('name', '=', 'Buffet Bar Inc.')->first();
 
         // Assert they are attached
@@ -216,7 +250,7 @@ class RelationsTest extends TestCase
         $user->clients()->sync([]);
 
         // Get the new user model
-        $user = User::where('name', '=', 'Jane Doe')->first();
+        $user   = User::where('name', '=', 'Jane Doe')->first();
         $client = Client::Where('name', '=', 'Buffet Bar Inc.')->first();
 
         // Assert they are not attached
@@ -268,25 +302,32 @@ class RelationsTest extends TestCase
     public function testBelongsToManySync(): void
     {
         // create test instances
-        $user = User::create(['name' => 'John Doe']);
-        $client1 = Client::create(['name' => 'Pork Pies Ltd.'])->_id;
-        $client2 = Client::create(['name' => 'Buffet Bar Inc.'])->_id;
+        $user    = User::create(['name' => 'Hans Thomas']);
+        $client1 = Client::create(['name' => 'Pork Pies Ltd.']);
+        $client2 = Client::create(['name' => 'Buffet Bar Inc.']);
 
         // Sync multiple
-        $user->clients()->sync([$client1, $client2]);
+        $user->clients()->sync([$client1->_id, $client2->_id]);
         $this->assertCount(2, $user->clients);
 
-        // Refresh user
-        $user = User::where('name', '=', 'John Doe')->first();
+        // Sync single wrapped by an array
+        $user->clients()->sync([$client1->_id]);
+        $user->load('clients');
 
-        // Sync single
-        $user->clients()->sync([$client1]);
         $this->assertCount(1, $user->clients);
+        self::assertTrue($user->clients->first()->is($client1));
+
+        // Sync single model
+        $user->clients()->sync($client2);
+        $user->load('clients');
+
+        $this->assertCount(1, $user->clients);
+        self::assertTrue($user->clients->first()->is($client2));
     }
 
     public function testBelongsToManyAttachArray(): void
     {
-        $user = User::create(['name' => 'John Doe']);
+        $user    = User::create(['name' => 'John Doe']);
         $client1 = Client::create(['name' => 'Test 1'])->_id;
         $client2 = Client::create(['name' => 'Test 2'])->_id;
 
@@ -298,8 +339,8 @@ class RelationsTest extends TestCase
     public function testBelongsToManyAttachEloquentCollection(): void
     {
         User::create(['name' => 'John Doe']);
-        $client1 = Client::create(['name' => 'Test 1']);
-        $client2 = Client::create(['name' => 'Test 2']);
+        $client1    = Client::create(['name' => 'Test 1']);
+        $client2    = Client::create(['name' => 'Test 2']);
         $collection = new Collection([$client1, $client2]);
 
         $user = User::where('name', '=', 'John Doe')->first();
@@ -307,9 +348,231 @@ class RelationsTest extends TestCase
         $this->assertCount(2, $user->clients);
     }
 
+    public function testBelongsToManySyncWithCustomKeys(): void
+    {
+        $client = Client::create(['cclient_id' => (string) (new ObjectId()), 'years' => '5']);
+        $skill1    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'PHP']);
+        $skill2    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'Laravel']);
+
+        $client = Client::query()->find($client->_id);
+        $client->skillsWithCustomKeys()->sync([$skill1->cskill_id, $skill2->cskill_id]);
+        $this->assertCount(2, $client->skillsWithCustomKeys);
+
+        self::assertIsString($skill1->cskill_id);
+        self::assertContains($skill1->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill1->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        self::assertIsString($skill2->cskill_id);
+        self::assertContains($skill2->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill2->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill1->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill2->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+    }
+
+    public function testBelongsToManySyncModelWithCustomKeys(): void
+    {
+        $client = Client::create(['cclient_id' => (string) (new ObjectId()), 'years' => '5']);
+        $skill1    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'PHP']);
+
+        $client = Client::query()->find($client->_id);
+        $client->skillsWithCustomKeys()->sync($skill1);
+        $this->assertCount(1, $client->skillsWithCustomKeys);
+
+        self::assertIsString($skill1->cskill_id);
+        self::assertContains($skill1->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill1->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill1->_id);
+        self::assertIsString($check->_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+    }
+
+    public function testBelongsToManySyncEloquentCollectionWithCustomKeys(): void
+    {
+        $client = Client::create(['cclient_id' => (string) (new ObjectId()), 'years' => '5']);
+        $skill1    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'PHP']);
+        $skill2    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'Laravel']);
+        $collection = new Collection([$skill1, $skill2]);
+
+        $client = Client::query()->find($client->_id);
+        $client->skillsWithCustomKeys()->sync($collection);
+        $this->assertCount(2, $client->skillsWithCustomKeys);
+
+        self::assertIsString($skill1->cskill_id);
+        self::assertContains($skill1->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill1->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        self::assertIsString($skill2->cskill_id);
+        self::assertContains($skill2->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill2->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill1->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill2->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+    }
+
+    public function testBelongsToManyAttachWithCustomKeys(): void
+    {
+        $client = Client::create(['cclient_id' => (string) (new ObjectId()), 'years' => '5']);
+        $skill1    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'PHP']);
+        $skill2    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'Laravel']);
+
+        $client = Client::query()->find($client->_id);
+        $client->skillsWithCustomKeys()->attach([$skill1->cskill_id, $skill2->cskill_id]);
+        $this->assertCount(2, $client->skillsWithCustomKeys);
+
+        self::assertIsString($skill1->cskill_id);
+        self::assertContains($skill1->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill1->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        self::assertIsString($skill2->cskill_id);
+        self::assertContains($skill2->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill2->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill1->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill2->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+    }
+
+    public function testBelongsToManyAttachModelWithCustomKeys(): void
+    {
+        $client = Client::create(['cclient_id' => (string) (new ObjectId()), 'years' => '5']);
+        $skill1    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'PHP']);
+
+        $client = Client::query()->find($client->_id);
+        $client->skillsWithCustomKeys()->attach($skill1);
+        $this->assertCount(1, $client->skillsWithCustomKeys);
+
+        self::assertIsString($skill1->cskill_id);
+        self::assertContains($skill1->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill1->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill1->_id);
+        self::assertIsString($check->_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+    }
+
+    public function testBelongsToManyAttachEloquentCollectionWithCustomKeys(): void
+    {
+        $client = Client::create(['cclient_id' => (string) (new ObjectId()), 'years' => '5']);
+        $skill1    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'PHP']);
+        $skill2    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'Laravel']);
+        $collection = new Collection([$skill1, $skill2]);
+
+        $client = Client::query()->find($client->_id);
+        $client->skillsWithCustomKeys()->attach($collection);
+        $this->assertCount(2, $client->skillsWithCustomKeys);
+
+        self::assertIsString($skill1->cskill_id);
+        self::assertContains($skill1->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill1->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        self::assertIsString($skill2->cskill_id);
+        self::assertContains($skill2->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill2->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill1->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill2->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+    }
+
+    public function testBelongsToManyDetachWithCustomKeys(): void
+    {
+        $client = Client::create(['cclient_id' => (string) (new ObjectId()), 'years' => '5']);
+        $skill1    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'PHP']);
+        $skill2    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'Laravel']);
+
+        $client = Client::query()->find($client->_id);
+        $client->skillsWithCustomKeys()->sync([$skill1->cskill_id, $skill2->cskill_id]);
+        $this->assertCount(2, $client->skillsWithCustomKeys);
+
+        $client->skillsWithCustomKeys()->detach($skill1->cskill_id);
+        $client->load('skillsWithCustomKeys'); // Reload the relationship based on the latest pivot column's data
+        $this->assertCount(1, $client->skillsWithCustomKeys);
+
+        self::assertIsString($skill1->cskill_id);
+        self::assertNotContains($skill1->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill1->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        self::assertIsString($skill2->cskill_id);
+        self::assertContains($skill2->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill2->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill1->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertNotContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill2->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+    }
+
+    public function testBelongsToManyDetachModelWithCustomKeys(): void
+    {
+        $client = Client::create(['cclient_id' => (string) (new ObjectId()), 'years' => '5']);
+        $skill1    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'PHP']);
+        $skill2    = Skill::create(['cskill_id' => (string) (new ObjectId()), 'name' => 'Laravel']);
+
+        $client = Client::query()->find($client->_id);
+        $client->skillsWithCustomKeys()->sync([$skill1->cskill_id, $skill2->cskill_id]);
+        $this->assertCount(2, $client->skillsWithCustomKeys);
+
+        $client->skillsWithCustomKeys()->detach($skill1);
+        $client->load('skillsWithCustomKeys'); // Reload the relationship based on the latest pivot column's data
+        $this->assertCount(1, $client->skillsWithCustomKeys);
+
+        self::assertIsString($skill1->cskill_id);
+        self::assertNotContains($skill1->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill1->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        self::assertIsString($skill2->cskill_id);
+        self::assertContains($skill2->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($skill2->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill1->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertNotContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+
+        $check = Skill::query()->find($skill2->_id);
+        self::assertIsString($check->cskill_id);
+        self::assertContains($check->cskill_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+        self::assertNotContains($check->_id, $client->skillsWithCustomKeys->pluck('cskill_id'));
+    }
+
     public function testBelongsToManySyncAlreadyPresent(): void
     {
-        $user = User::create(['name' => 'John Doe']);
+        $user    = User::create(['name' => 'John Doe']);
         $client1 = Client::create(['name' => 'Test 1'])->_id;
         $client2 = Client::create(['name' => 'Test 2'])->_id;
 
@@ -326,11 +589,11 @@ class RelationsTest extends TestCase
 
     public function testBelongsToManyCustom(): void
     {
-        $user = User::create(['name' => 'John Doe']);
+        $user  = User::create(['name' => 'John Doe']);
         $group = $user->groups()->create(['name' => 'Admins']);
 
         // Refetch
-        $user = User::find($user->_id);
+        $user  = User::find($user->_id);
         $group = Group::find($group->_id);
 
         // Check for custom relation attributes
@@ -346,7 +609,7 @@ class RelationsTest extends TestCase
 
     public function testMorph(): void
     {
-        $user = User::create(['name' => 'John Doe']);
+        $user   = User::create(['name' => 'John Doe']);
         $client = Client::create(['name' => 'Jane Doe']);
 
         $photo = Photo::create(['url' => 'http://graph.facebook.com/john.doe/picture']);
@@ -370,21 +633,484 @@ class RelationsTest extends TestCase
         $this->assertEquals($photo->id, $client->photo->id);
 
         $photo = Photo::first();
-        $this->assertEquals($photo->imageable->name, $user->name);
+        $this->assertEquals($photo->hasImage->name, $user->name);
 
-        $user = User::with('photos')->find($user->_id);
+        $user      = User::with('photos')->find($user->_id);
         $relations = $user->getRelations();
         $this->assertArrayHasKey('photos', $relations);
         $this->assertEquals(1, $relations['photos']->count());
 
-        $photos = Photo::with('imageable')->get();
+        $photos    = Photo::with('hasImage')->get();
         $relations = $photos[0]->getRelations();
-        $this->assertArrayHasKey('imageable', $relations);
-        $this->assertInstanceOf(User::class, $photos[0]->imageable);
+        $this->assertArrayHasKey('hasImage', $relations);
+        $this->assertInstanceOf(User::class, $photos[0]->hasImage);
 
         $relations = $photos[1]->getRelations();
-        $this->assertArrayHasKey('imageable', $relations);
-        $this->assertInstanceOf(Client::class, $photos[1]->imageable);
+        $this->assertArrayHasKey('hasImage', $relations);
+        $this->assertInstanceOf(Client::class, $photos[1]->hasImage);
+
+        // inverse
+        $photo = Photo::query()->create(['url' => 'https://graph.facebook.com/hans.thomas/picture']);
+        $client = Client::create(['name' => 'Hans Thomas']);
+        $photo->hasImage()->associate($client)->save();
+
+        $this->assertCount(1, $photo->hasImage()->get());
+        $this->assertInstanceOf(Client::class, $photo->hasImage);
+        $this->assertEquals($client->_id, $photo->hasImage->_id);
+
+        // inverse with custom ownerKey
+        $photo = Photo::query()->create(['url' => 'https://graph.facebook.com/young.gerald/picture']);
+        $client = Client::create(['cclient_id' => (string) (new ObjectId()), 'name' => 'Young Gerald']);
+        $photo->hasImageWithCustomOwnerKey()->associate($client)->save();
+
+        $this->assertCount(1, $photo->hasImageWithCustomOwnerKey()->get());
+        $this->assertInstanceOf(Client::class, $photo->hasImageWithCustomOwnerKey);
+        $this->assertEquals($client->cclient_id, $photo->has_image_with_custom_owner_key_id);
+        $this->assertEquals($client->_id, $photo->hasImageWithCustomOwnerKey->_id);
+    }
+
+    public function testMorphToMany(): void
+    {
+        $user = User::query()->create(['name' => 'Young Gerald']);
+        $client = Client::query()->create(['name' => 'Hans Thomas']);
+
+        $label  = Label::query()->create(['name' => 'Had the world in my palms, I gave it to you']);
+
+        $user->labels()->attach($label);
+        $client->labels()->attach($label);
+
+        $this->assertEquals(1, $user->labels->count());
+        $this->assertContains($label->_id, $user->labels->pluck('_id'));
+
+        $this->assertEquals(1, $client->labels->count());
+        $this->assertContains($label->_id, $user->labels->pluck('_id'));
+    }
+
+    public function testMorphToManyAttachEloquentCollection(): void
+    {
+        $client = Client::query()->create(['name' => 'Young Gerald']);
+
+        $label1  = Label::query()->create(['name' => "Make no mistake, it's the life that I was chosen for"]);
+        $label2  = Label::query()->create(['name' => 'All I prayed for was an open door']);
+
+        $client->labels()->attach(new Collection([$label1, $label2]));
+
+        $this->assertEquals(2, $client->labels->count());
+        $this->assertContains($label1->_id, $client->labels->pluck('_id'));
+        $this->assertContains($label2->_id, $client->labels->pluck('_id'));
+    }
+
+    public function testMorphToManyAttachMultipleIds(): void
+    {
+        $client = Client::query()->create(['name' => 'Young Gerald']);
+
+        $label1  = Label::query()->create(['name' => 'stayed solid i never fled']);
+        $label2  = Label::query()->create(['name' => "I've got a lane and I'm in gear"]);
+
+        $client->labels()->attach([$label1->_id, $label2->_id]);
+
+        $this->assertEquals(2, $client->labels->count());
+        $this->assertContains($label1->_id, $client->labels->pluck('_id'));
+        $this->assertContains($label2->_id, $client->labels->pluck('_id'));
+    }
+
+    public function testMorphToManyDetaching(): void
+    {
+        $client = Client::query()->create(['name' => 'Marshall Mathers']);
+
+        $label1  = Label::query()->create(['name' => "I'll never love again"]);
+        $label2  = Label::query()->create(['name' => 'The way I loved you']);
+
+        $client->labels()->attach([$label1->_id, $label2->_id]);
+
+        $this->assertEquals(2, $client->labels->count());
+
+        $client->labels()->detach($label1);
+        $check = $client->withoutRelations();
+
+        $this->assertEquals(1, $check->labels->count());
+        $this->assertContains($label2->_id, $client->labels->pluck('_id'));
+    }
+
+    public function testMorphToManyDetachingMultipleIds(): void
+    {
+        $client = Client::query()->create(['name' => 'Young Gerald']);
+
+        $label1  = Label::query()->create(['name' => "I make what I wanna make, but I won't make everyone happy"]);
+        $label2  = Label::query()->create(['name' => "My skin's thick, but I'm not bulletproof"]);
+        $label3  = Label::query()->create(['name' => 'All I can be is myself, go, and tell the truth']);
+
+        $client->labels()->attach([$label1->_id, $label2->_id, $label3->_id]);
+
+        $this->assertEquals(3, $client->labels->count());
+
+        $client->labels()->detach([$label1->_id, $label2->_id]);
+        $client->refresh();
+
+        $this->assertEquals(1, $client->labels->count());
+        $this->assertContains($label3->_id, $client->labels->pluck('_id'));
+    }
+
+    public function testMorphToManySyncing(): void
+    {
+        $user = User::query()->create(['name' => 'Young Gerald']);
+        $client = Client::query()->create(['name' => 'Hans Thomas']);
+
+        $label  = Label::query()->create(['name' => "Lesson learned, we weren't the perfect match"]);
+        $label2  = Label::query()->create(['name' => 'Future ref, not keeping personal and work attached']);
+
+        $user->labels()->sync($label);
+        $client->labels()->sync($label);
+        $client->labels()->sync($label2, false);
+
+        $this->assertEquals(1, $user->labels->count());
+        $this->assertContains($label->_id, $user->labels->pluck('_id'));
+        $this->assertNotContains($label2->_id, $user->labels->pluck('_id'));
+
+        $this->assertEquals(2, $client->labels->count());
+        $this->assertContains($label->_id, $client->labels->pluck('_id'));
+        $this->assertContains($label2->_id, $client->labels->pluck('_id'));
+    }
+
+    public function testMorphToManySyncingEloquentCollection(): void
+    {
+        $client = Client::query()->create(['name' => 'Young Gerald']);
+
+        $label  = Label::query()->create(['name' => 'Why the ones who love me most, the people I push away?']);
+        $label2  = Label::query()->create(['name' => 'Look in a mirror, this is you']);
+
+        $client->labels()->sync(new Collection([$label, $label2]));
+
+        $this->assertEquals(2, $client->labels->count());
+        $this->assertContains($label->_id, $client->labels->pluck('_id'));
+        $this->assertContains($label2->_id, $client->labels->pluck('_id'));
+    }
+
+    public function testMorphToManySyncingMultipleIds(): void
+    {
+        $client = Client::query()->create(['name' => 'Young Gerald']);
+
+        $label  = Label::query()->create(['name' => 'They all talk about karma, how it slowly comes']);
+        $label2  = Label::query()->create(['name' => "But life is short, enjoy it while you're young"]);
+
+        $client->labels()->sync([$label->_id, $label2->_id]);
+
+        $this->assertEquals(2, $client->labels->count());
+        $this->assertContains($label->_id, $client->labels->pluck('_id'));
+        $this->assertContains($label2->_id, $client->labels->pluck('_id'));
+    }
+
+    public function testMorphToManySyncingWithCustomKeys(): void
+    {
+        $client = Client::query()->create(['cclient_id' => (string) (new ObjectId()), 'name' => 'Young Gerald']);
+
+        $label  = Label::query()->create(['clabel_id' => (string) (new ObjectId()), 'name' => "Why do people do things that be bad for 'em?"]);
+        $label2  = Label::query()->create(['clabel_id' => (string) (new ObjectId()), 'name' => "Say we done with these things, then we ask for 'em"]);
+
+        $client->labelsWithCustomKeys()->sync([$label->clabel_id, $label2->clabel_id]);
+
+        $this->assertEquals(2, $client->labelsWithCustomKeys->count());
+        $this->assertContains($label->_id, $client->labelsWithCustomKeys->pluck('_id'));
+        $this->assertContains($label2->_id, $client->labelsWithCustomKeys->pluck('_id'));
+
+        $client->labelsWithCustomKeys()->sync($label);
+        $client->load('labelsWithCustomKeys');
+
+        $this->assertEquals(1, $client->labelsWithCustomKeys->count());
+        $this->assertContains($label->_id, $client->labelsWithCustomKeys->pluck('_id'));
+        $this->assertNotContains($label2->_id, $client->labelsWithCustomKeys->pluck('_id'));
+    }
+
+    public function testMorphToManyLoadAndRefreshing(): void
+    {
+        $user = User::query()->create(['name' => 'The Pretty Reckless']);
+
+        $client = Client::query()->create(['name' => 'Young Gerald']);
+
+        $label  = Label::query()->create(['name' => 'The greatest gift is knowledge itself']);
+        $label2  = Label::query()->create(['name' => "I made it here all by my lonely, no askin' for help"]);
+
+        $client->labels()->sync([$label->_id, $label2->_id]);
+        $client->users()->sync($user);
+
+        $this->assertEquals(2, $client->labels->count());
+
+        $client->load('labels');
+
+        $this->assertEquals(2, $client->labels->count());
+
+        $client->refresh();
+
+        $this->assertEquals(2, $client->labels->count());
+
+        $check = Client::query()->find($client->_id);
+
+        $this->assertEquals(2, $check->labels->count());
+
+        $check = Client::query()->with('labels')->find($client->_id);
+
+        $this->assertEquals(2, $check->labels->count());
+    }
+
+    public function testMorphToManyHasQuery(): void
+    {
+        $client = Client::query()->create(['name' => 'Ashley']);
+        $client2 = Client::query()->create(['name' => 'Halsey']);
+        $client3 = Client::query()->create(['name' => 'John Doe 2']);
+
+        $label  = Label::query()->create(['name' => "I've been digging myself down deeper"]);
+        $label2  = Label::query()->create(['name' => "I won't stop 'til I get where you are"]);
+
+        $client->labels()->sync([$label->_id, $label2->_id]);
+        $client2->labels()->sync($label);
+
+        $this->assertEquals(2, $client->labels->count());
+        $this->assertEquals(1, $client2->labels->count());
+
+        $check = Client::query()->has('labels')->get();
+        $this->assertCount(2, $check);
+
+        $check = Client::query()->has('labels', '>', 1)->get();
+        $this->assertCount(1, $check);
+        $this->assertContains($client->_id, $check->pluck('_id'));
+
+        $check = Client::query()->has('labels', '<', 2)->get();
+        $this->assertCount(2, $check);
+        $this->assertContains($client2->_id, $check->pluck('_id'));
+        $this->assertContains($client3->_id, $check->pluck('_id'));
+    }
+
+    public function testMorphedByMany(): void
+    {
+        $user = User::query()->create(['name' => 'Young Gerald']);
+        $client = Client::query()->create(['name' => 'Hans Thomas']);
+        $extra = Client::query()->create(['name' => 'John Doe']);
+
+        $label  = Label::query()->create(['name' => 'Never finished, tryna search for more']);
+
+        $label->users()->attach($user);
+        $label->clients()->attach($client);
+
+        $this->assertEquals(1, $label->users->count());
+        $this->assertContains($user->_id, $label->users->pluck('_id'));
+
+        $this->assertEquals(1, $label->clients->count());
+        $this->assertContains($client->_id, $label->clients->pluck('_id'));
+    }
+
+    public function testMorphedByManyAttachEloquentCollection(): void
+    {
+        $client1 = Client::query()->create(['name' => 'Young Gerald']);
+        $client2 = Client::query()->create(['name' => 'Hans Thomas']);
+        $extra = Client::query()->create(['name' => 'John Doe']);
+
+        $label  = Label::query()->create(['name' => 'They want me to architect Rome, in a day']);
+
+        $label->clients()->attach(new Collection([$client1, $client2]));
+
+        $this->assertEquals(2, $label->clients->count());
+        $this->assertContains($client1->_id, $label->clients->pluck('_id'));
+        $this->assertContains($client2->_id, $label->clients->pluck('_id'));
+
+        $client1->refresh();
+        $this->assertEquals(1, $client1->labels->count());
+    }
+
+    public function testMorphedByManyAttachMultipleIds(): void
+    {
+        $client1 = Client::query()->create(['name' => 'Austin Richard Post']);
+        $client2 = Client::query()->create(['name' => 'Hans Thomas']);
+        $extra = Client::query()->create(['name' => 'John Doe']);
+
+        $label  = Label::query()->create(['name' => 'Always in the game and never played by the rules']);
+
+        $label->clients()->attach([$client1->_id, $client2->_id]);
+
+        $this->assertEquals(2, $label->clients->count());
+        $this->assertContains($client1->_id, $label->clients->pluck('_id'));
+        $this->assertContains($client2->_id, $label->clients->pluck('_id'));
+
+        $client1->refresh();
+        $this->assertEquals(1, $client1->labels->count());
+    }
+
+    public function testMorphedByManyDetaching(): void
+    {
+        $client1 = Client::query()->create(['name' => 'Austin Richard Post']);
+        $client2 = Client::query()->create(['name' => 'Hans Thomas']);
+        $extra = Client::query()->create(['name' => 'John Doe']);
+
+        $label  = Label::query()->create(['name' => 'Seasons change and our love went cold']);
+
+        $label->clients()->attach([$client1->_id, $client2->_id]);
+
+        $this->assertEquals(2, $label->clients->count());
+
+        $label->clients()->detach($client1->_id);
+        $check = $label->withoutRelations();
+
+        $this->assertEquals(1, $check->clients->count());
+        $this->assertContains($client2->_id, $check->clients->pluck('_id'));
+    }
+
+    public function testMorphedByManyDetachingMultipleIds(): void
+    {
+        $client1 = Client::query()->create(['name' => 'Austin Richard Post']);
+        $client2 = Client::query()->create(['name' => 'Hans Thomas']);
+        $client3 = Client::query()->create(['name' => 'John Doe']);
+
+        $label  = Label::query()->create(['name' => "Run away, but we're running in circles"]);
+
+        $label->clients()->attach([$client1->_id, $client2->_id, $client3->_id]);
+
+        $this->assertEquals(3, $label->clients->count());
+
+        $label->clients()->detach([$client1->_id, $client2->_id]);
+        $label->load('clients');
+
+        $this->assertEquals(1, $label->clients->count());
+        $this->assertContains($client3->_id, $label->clients->pluck('_id'));
+    }
+
+    public function testMorphedByManySyncing(): void
+    {
+        $client1 = Client::query()->create(['name' => 'Austin Richard Post']);
+        $client2 = Client::query()->create(['name' => 'Hans Thomas']);
+        $client3 = Client::query()->create(['name' => 'John Doe']);
+
+        $label  = Label::query()->create(['name' => "Was scared of losin' somethin' that we never found"]);
+
+        $label->clients()->sync($client1);
+        $label->clients()->sync($client2, false);
+        $label->clients()->sync($client3, false);
+
+        $this->assertEquals(3, $label->clients->count());
+        $this->assertContains($client1->_id, $label->clients->pluck('_id'));
+        $this->assertContains($client2->_id, $label->clients->pluck('_id'));
+        $this->assertContains($client3->_id, $label->clients->pluck('_id'));
+    }
+
+    public function testMorphedByManySyncingEloquentCollection(): void
+    {
+        $client1 = Client::query()->create(['name' => 'Austin Richard Post']);
+        $client2 = Client::query()->create(['name' => 'Hans Thomas']);
+        $extra = Client::query()->create(['name' => 'John Doe']);
+
+        $label  = Label::query()->create(['name' => "I'm goin' hard 'til I'm gone. Can you feel it?"]);
+
+        $label->clients()->sync(new Collection([$client1, $client2]));
+
+        $this->assertEquals(2, $label->clients->count());
+        $this->assertContains($client1->_id, $label->clients->pluck('_id'));
+        $this->assertContains($client2->_id, $label->clients->pluck('_id'));
+
+        $this->assertNotContains($extra->_id, $label->clients->pluck('_id'));
+    }
+
+    public function testMorphedByManySyncingMultipleIds(): void
+    {
+        $client1 = Client::query()->create(['name' => 'Dorothy']);
+        $client2 = Client::query()->create(['name' => 'Hans Thomas']);
+        $extra = Client::query()->create(['name' => 'John Doe']);
+
+        $label  = Label::query()->create(['name' => "Love ain't patient, it's not kind. true love waits to rob you blind"]);
+
+        $label->clients()->sync([$client1->_id, $client2->_id]);
+
+        $this->assertEquals(2, $label->clients->count());
+        $this->assertContains($client1->_id, $label->clients->pluck('_id'));
+        $this->assertContains($client2->_id, $label->clients->pluck('_id'));
+
+        $this->assertNotContains($extra->_id, $label->clients->pluck('_id'));
+    }
+
+    public function testMorphedByManySyncingWithCustomKeys(): void
+    {
+        $client1 = Client::query()->create(['cclient_id' => (string) (new ObjectId()), 'name' => 'Young Gerald']);
+        $client2 = Client::query()->create(['cclient_id' => (string) (new ObjectId()), 'name' => 'Hans Thomas']);
+        $client3 = Client::query()->create(['cclient_id' => (string) (new ObjectId()), 'name' => 'John Doe']);
+
+        $label  = Label::query()->create(['clabel_id' => (string) (new ObjectId()), 'name' => "I'm in my own lane, so what do I have to hurry for?"]);
+
+        $label->clientsWithCustomKeys()->sync([$client1->cclient_id, $client2->cclient_id]);
+
+        $this->assertEquals(2, $label->clientsWithCustomKeys->count());
+        $this->assertContains($client1->_id, $label->clientsWithCustomKeys->pluck('_id'));
+        $this->assertContains($client2->_id, $label->clientsWithCustomKeys->pluck('_id'));
+
+        $this->assertNotContains($client3->_id, $label->clientsWithCustomKeys->pluck('_id'));
+
+        $label->clientsWithCustomKeys()->sync($client3);
+        $label->load('clientsWithCustomKeys');
+
+        $this->assertEquals(1, $label->clientsWithCustomKeys->count());
+        $this->assertNotContains($client1->_id, $label->clientsWithCustomKeys->pluck('_id'));
+        $this->assertNotContains($client2->_id, $label->clientsWithCustomKeys->pluck('_id'));
+
+        $this->assertContains($client3->_id, $label->clientsWithCustomKeys->pluck('_id'));
+    }
+
+    public function testMorphedByManyLoadAndRefreshing(): void
+    {
+        $user = User::query()->create(['name' => 'Abel Tesfaye']);
+
+        $client1 = Client::query()->create(['name' => 'Young Gerald']);
+        $client2 = Client::query()->create(['name' => 'Hans Thomas']);
+        $client3 = Client::query()->create(['name' => 'John Doe']);
+
+        $label  = Label::query()->create(['name' => "but don't think I don't think about you just cause I ain't spoken about you"]);
+
+        $label->clients()->sync(new Collection([$client1, $client2, $client3]));
+        $label->users()->sync($user);
+
+        $this->assertEquals(3, $label->clients->count());
+
+        $label->load('clients');
+
+        $this->assertEquals(3, $label->clients->count());
+
+        $label->refresh();
+
+        $this->assertEquals(3, $label->clients->count());
+
+        $check = Label::query()->find($label->_id);
+
+        $this->assertEquals(3, $check->clients->count());
+
+        $check = Label::query()->with('clients')->find($label->_id);
+
+        $this->assertEquals(3, $check->clients->count());
+    }
+
+    public function testMorphedByManyHasQuery(): void
+    {
+        $user = User::query()->create(['name' => 'Austin Richard Post']);
+
+        $client1 = Client::query()->create(['name' => 'Young Gerald']);
+        $client2 = Client::query()->create(['name' => 'John Doe']);
+
+        $label  = Label::query()->create(['name' => "My star's back shining bright, I just polished it"]);
+        $label2  = Label::query()->create(['name' => "Somethin' in my spirit woke back up like I just sat up"]);
+        $label3  = Label::query()->create(['name' => 'How can I beam when you blocking my light?']);
+
+        $label->clients()->sync(new Collection([$client1, $client2]));
+        $label2->clients()->sync($client1);
+        $label3->users()->sync($user);
+
+        $this->assertEquals(2, $label->clients->count());
+
+        $check = Label::query()->has('clients')->get();
+        $this->assertCount(2, $check);
+        $this->assertContains($label->_id, $check->pluck('_id'));
+        $this->assertContains($label2->_id, $check->pluck('_id'));
+
+        $check = Label::query()->has('users')->get();
+        $this->assertCount(1, $check);
+        $this->assertContains($label3->_id, $check->pluck('_id'));
+
+        $check = Label::query()->has('clients', '>', 1)->get();
+        $this->assertCount(1, $check);
+        $this->assertContains($label->_id, $check->pluck('_id'));
     }
 
     public function testHasManyHas(): void
@@ -488,7 +1214,7 @@ class RelationsTest extends TestCase
     public function testDoubleSaveOneToMany(): void
     {
         $author = User::create(['name' => 'George R. R. Martin']);
-        $book = Book::create(['title' => 'A Game of Thrones']);
+        $book   = Book::create(['title' => 'A Game of Thrones']);
 
         $author->books()->save($book);
         $author->books()->save($book);
@@ -497,7 +1223,7 @@ class RelationsTest extends TestCase
         $this->assertEquals($author->_id, $book->author_id);
 
         $author = User::where('name', 'George R. R. Martin')->first();
-        $book = Book::where('title', 'A Game of Thrones')->first();
+        $book   = Book::where('title', 'A Game of Thrones')->first();
         $this->assertEquals(1, $author->books()->count());
         $this->assertEquals($author->_id, $book->author_id);
 
@@ -510,7 +1236,7 @@ class RelationsTest extends TestCase
 
     public function testDoubleSaveManyToMany(): void
     {
-        $user = User::create(['name' => 'John Doe']);
+        $user   = User::create(['name' => 'John Doe']);
         $client = Client::create(['name' => 'Admins']);
 
         $user->clients()->save($client);
@@ -521,7 +1247,7 @@ class RelationsTest extends TestCase
         $this->assertEquals([$user->_id], $client->user_ids);
         $this->assertEquals([$client->_id], $user->client_ids);
 
-        $user = User::where('name', 'John Doe')->first();
+        $user   = User::where('name', 'John Doe')->first();
         $client = Client::where('name', 'Admins')->first();
         $this->assertEquals(1, $user->clients()->count());
         $this->assertEquals([$user->_id], $client->user_ids);
@@ -533,5 +1259,18 @@ class RelationsTest extends TestCase
         $this->assertEquals(1, $user->clients()->count());
         $this->assertEquals([$user->_id], $client->user_ids);
         $this->assertEquals([$client->_id], $user->client_ids);
+    }
+
+    public function testWhereBelongsTo()
+    {
+        $user = User::create(['name' => 'John Doe']);
+        Item::create(['user_id' => $user->_id]);
+        Item::create(['user_id' => $user->_id]);
+        Item::create(['user_id' => $user->_id]);
+        Item::create(['user_id' => null]);
+
+        $items = Item::whereBelongsTo($user)->get();
+
+        $this->assertCount(3, $items);
     }
 }

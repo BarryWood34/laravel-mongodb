@@ -1,15 +1,16 @@
-ARG PHP_VERSION=8.0
-ARG COMPOSER_VERSION=2.0
+ARG PHP_VERSION=8.1
 
-FROM composer:${COMPOSER_VERSION}
 FROM php:${PHP_VERSION}-cli
 
+# Install extensions
 RUN apt-get update && \
-    apt-get install -y autoconf pkg-config libssl-dev git libzip-dev zlib1g-dev && \
+    apt-get install -y autoconf pkg-config libssl-dev git unzip libzip-dev zlib1g-dev && \
     pecl install mongodb && docker-php-ext-enable mongodb && \
     pecl install xdebug && docker-php-ext-enable xdebug && \
-    docker-php-ext-install -j$(nproc) pdo_mysql zip
+    docker-php-ext-install -j$(nproc) zip
 
-COPY --from=composer /usr/bin/composer /usr/local/bin/composer
+# Create php.ini
+RUN cp "$PHP_INI_DIR/php.ini-development" "$PHP_INI_DIR/php.ini"
 
-WORKDIR /code
+# Install Composer
+COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer

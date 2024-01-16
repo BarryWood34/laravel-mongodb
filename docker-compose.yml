@@ -1,34 +1,26 @@
-version: '3'
+version: '3.5'
 
 services:
-    tests:
-        container_name: tests
-        build:
-            context: .
-            dockerfile: Dockerfile
-        volumes:
-            - .:/code
-        working_dir: /code
-        depends_on:
-          - mongodb
-          - mysql
-
-    mysql:
-        container_name: mysql
-        image: mysql:5.7
-        ports:
-            - 3306:3306
+    app:
+        tty: true
+        build: .
+        working_dir: /var/www/laravel-mongodb
+        command: "bash -c 'composer install && composer run test'"
         environment:
-            MYSQL_ROOT_PASSWORD:
-            MYSQL_DATABASE: unittest
-            MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
-        logging:
-            driver: none
+            MONGODB_URI: 'mongodb://mongodb/'
+        volumes:
+            - .:/var/www/laravel-mongodb
+        depends_on:
+            mongodb:
+                condition: service_healthy
 
     mongodb:
         container_name: mongodb
-        image: mongo
+        image: mongo:latest
         ports:
-            - 27017:27017
-        logging:
-            driver: none
+            - "27017:27017"
+        healthcheck:
+            test: echo 'db.runCommand("ping").ok' | mongosh mongodb:27017 --quiet
+            interval: 10s
+            timeout: 10s
+            retries: 5

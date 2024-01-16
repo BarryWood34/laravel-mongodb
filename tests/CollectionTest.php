@@ -2,18 +2,20 @@
 
 declare(strict_types=1);
 
-use Jenssegers\Mongodb\Collection;
-use Jenssegers\Mongodb\Connection;
+namespace MongoDB\Laravel\Tests;
+
 use MongoDB\BSON\ObjectID;
 use MongoDB\Collection as MongoCollection;
+use MongoDB\Laravel\Collection;
+use MongoDB\Laravel\Connection;
 
 class CollectionTest extends TestCase
 {
     public function testExecuteMethodCall()
     {
-        $return = ['foo' => 'bar'];
-        $where = ['id' => new ObjectID('56f94800911dcc276b5723dd')];
-        $time = 1.1;
+        $return      = ['foo' => 'bar'];
+        $where       = ['id' => new ObjectID('56f94800911dcc276b5723dd')];
+        $time        = 1.1;
         $queryString = 'name-collection.findOne({"id":"56f94800911dcc276b5723dd"})';
 
         $mongoCollection = $this->getMockBuilder(MongoCollection::class)

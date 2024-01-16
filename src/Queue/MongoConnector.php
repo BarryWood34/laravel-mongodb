@@ -1,24 +1,24 @@
 <?php
 
-namespace Jenssegers\Mongodb\Queue;
+declare(strict_types=1);
 
+namespace MongoDB\Laravel\Queue;
+
+use Illuminate\Contracts\Queue\Queue;
 use Illuminate\Database\ConnectionResolverInterface;
 use Illuminate\Queue\Connectors\ConnectorInterface;
-use Illuminate\Support\Arr;
 
 class MongoConnector implements ConnectorInterface
 {
     /**
      * Database connections.
      *
-     * @var \Illuminate\Database\ConnectionResolverInterface
+     * @var ConnectionResolverInterface
      */
     protected $connections;
 
     /**
      * Create a new connector instance.
-     *
-     * @param \Illuminate\Database\ConnectionResolverInterface $connections
      */
     public function __construct(ConnectionResolverInterface $connections)
     {
@@ -28,16 +28,15 @@ class MongoConnector implements ConnectorInterface
     /**
      * Establish a queue connection.
      *
-     * @param array $config
-     * @return \Illuminate\Contracts\Queue\Queue
+     * @return Queue
      */
     public function connect(array $config)
     {
         return new MongoQueue(
-            $this->connections->connection(Arr::get($config, 'connection')),
+            $this->connections->connection($config['connection'] ?? null),
             $config['table'],
             $config['queue'],
-            Arr::get($config, 'expire', 60)
+            $config['expire'] ?? 60,
         );
     }
 }

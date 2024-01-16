@@ -1,28 +1,37 @@
 <?php
 
-namespace Jenssegers\Mongodb\Queue\Failed;
+declare(strict_types=1);
+
+namespace MongoDB\Laravel\Queue\Failed;
 
 use Carbon\Carbon;
+use Exception;
 use Illuminate\Queue\Failed\DatabaseFailedJobProvider;
+use MongoDB\BSON\UTCDateTime;
+
+use function array_map;
 
 class MongoFailedJobProvider extends DatabaseFailedJobProvider
 {
     /**
      * Log a failed job into storage.
      *
-     * @param string $connection
-     * @param string $queue
-     * @param string $payload
-     * @param  \Exception  $exception
+     * @param string    $connection
+     * @param string    $queue
+     * @param string    $payload
+     * @param Exception $exception
+     *
      * @return void
      */
     public function log($connection, $queue, $payload, $exception)
     {
-        $failed_at = Carbon::now()->getTimestamp();
-
-        $exception = (string) $exception;
-
-        $this->getTable()->insert(compact('connection', 'queue', 'payload', 'failed_at', 'exception'));
+        $this->getTable()->insert([
+            'connection' => $connection,
+            'queue' => $queue,
+            'payload' => $payload,
+            'failed_at' => new UTCDateTime(Carbon::now()),
+            'exception' => (string) $exception,
+        ]);
     }
 
     /**
@@ -47,6 +56,7 @@ class MongoFailedJobProvider extends DatabaseFailedJobProvider
      * Get a single failed job.
      *
      * @param mixed $id
+     *
      * @return object
      */
     public function find($id)
@@ -66,6 +76,7 @@ class MongoFailedJobProvider extends DatabaseFailedJobProvider
      * Delete a single failed job from storage.
      *
      * @param mixed $id
+     *
      * @return bool
      */
     public function forget($id)

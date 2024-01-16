@@ -1,23 +1,56 @@
 <?php
 
-namespace Jenssegers\Mongodb\Eloquent;
+declare(strict_types=1);
 
+namespace MongoDB\Laravel\Eloquent;
+
+use Brick\Math\BigDecimal;
+use Brick\Math\Exception\MathException as BrickMathException;
+use Brick\Math\RoundingMode;
+use Carbon\CarbonInterface;
 use DateTimeInterface;
 use Illuminate\Contracts\Queue\QueueableCollection;
 use Illuminate\Contracts\Queue\QueueableEntity;
+use Illuminate\Contracts\Support\Arrayable;
+use Illuminate\Database\Eloquent\Casts\Json;
 use Illuminate\Database\Eloquent\Model as BaseModel;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Exceptions\MathException;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Str;
-use Jenssegers\Mongodb\Query\Builder as QueryBuilder;
 use MongoDB\BSON\Binary;
+use MongoDB\BSON\Decimal128;
 use MongoDB\BSON\ObjectID;
 use MongoDB\BSON\UTCDateTime;
+use MongoDB\Laravel\Query\Builder as QueryBuilder;
+
+use function abs;
+use function array_key_exists;
+use function array_keys;
+use function array_merge;
+use function array_unique;
+use function array_values;
+use function class_basename;
+use function count;
+use function explode;
+use function func_get_args;
+use function in_array;
+use function is_array;
+use function is_numeric;
+use function is_string;
+use function ltrim;
+use function method_exists;
+use function sprintf;
+use function str_contains;
+use function str_starts_with;
+use function strcmp;
+use function uniqid;
 
 abstract class Model extends BaseModel
 {
-    use HybridRelations, EmbedsRelations;
+    use HybridRelations;
+    use EmbedsRelations;
 
     /**
      * The collection associated with the model.
@@ -48,14 +81,22 @@ abstract class Model extends BaseModel
     protected $parentRelation;
 
     /**
+     * List of field names to unset from the document on save.
+     *
+     * @var array{string, true}
+     */
+    private array $unset = [];
+
+    /**
      * Custom accessor for the model's id.
      *
-     * @param mixed $value
+     * @param  mixed $value
+     *
      * @return mixed
      */
     public function getIdAttribute($value = null)
     {
-        // If we don't have a value for 'id', we will use the Mongo '_id' value.
+        // If we don't have a value for 'id', we will use the MongoDB '_id' value.
         // This allows us to work with models in a more sql-like way.
         if (! $value && array_key_exists('_id', $this->attributes)) {
             $value = $this->attributes['_id'];
@@ -64,24 +105,22 @@ abstract class Model extends BaseModel
         // Convert ObjectID to string.
         if ($value instanceof ObjectID) {
             return (string) $value;
-        } elseif ($value instanceof Binary) {
+        }
+
+        if ($value instanceof Binary) {
             return (string) $value->getData();
         }
 
         return $value;
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function getQualifiedKeyName()
     {
         return $this->getKeyName();
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function fromDateTime($value)
     {
         // If the value is already a UTCDateTime instance, we don't need to parse it.
@@ -94,21 +133,19 @@ abstract class Model extends BaseModel
             $value = parent::asDateTime($value);
         }
 
-        return new UTCDateTime($value->format('Uv'));
+        return new UTCDateTime($value);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     protected function asDateTime($value)
     {
         // Convert UTCDateTime instances.
         if ($value instanceof UTCDateTime) {
             $date = $value->toDateTime();
 
-            $seconds = $date->format('U');
-            $milliseconds = abs($date->format('v'));
-            $timestampMs = sprintf('%d%03d', $seconds, $milliseconds);
+            $seconds      = $date->format('U');
+            $milliseconds = abs((int) $date->format('v'));
+            $timestampMs  = sprintf('%d%03d', $seconds, $milliseconds);
 
             return Date::createFromTimestampMs($timestampMs);
         }
@@ -116,41 +153,40 @@ abstract class Model extends BaseModel
         return parent::asDateTime($value);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function getDateFormat()
     {
         return $this->dateFormat ?: 'Y-m-d H:i:s';
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function freshTimestamp()
     {
-        return new UTCDateTime(Date::now()->format('Uv'));
+        return new UTCDateTime(Date::now());
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function getTable()
     {
         return $this->collection ?: parent::getTable();
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function getAttribute($key)
     {
         if (! $key) {
-            return;
+            return null;
+        }
+
+        $key = (string) $key;
+
+        // An unset attribute is null or throw an exception.
+        if (isset($this->unset[$key])) {
+            return $this->throwMissingAttributeExceptionIfApplicable($key);
         }
 
         // Dot notation support.
-        if (Str::contains($key, '.') && Arr::has($this->attributes, $key)) {
+        if (str_contains($key, '.') && Arr::has($this->attributes, $key)) {
             return $this->getAttributeValue($key);
         }
 
@@ -166,46 +202,121 @@ abstract class Model extends BaseModel
         return parent::getAttribute($key);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
+    protected function transformModelValue($key, $value)
+    {
+        $value = parent::transformModelValue($key, $value);
+        // Casting attributes to any of date types, will convert that attribute
+        // to a Carbon or CarbonImmutable instance.
+        // @see Model::setAttribute()
+        if ($this->hasCast($key) && $value instanceof CarbonInterface) {
+            $value->settings(array_merge($value->getSettings(), ['toStringFormat' => $this->getDateFormat()]));
+
+            $castType = $this->getCasts()[$key];
+            if ($this->isCustomDateTimeCast($castType) && str_starts_with($castType, 'date:')) {
+                $value->startOfDay();
+            }
+        }
+
+        return $value;
+    }
+
+    /** @inheritdoc */
+    protected function getCastType($key)
+    {
+        $castType = $this->getCasts()[$key];
+        if ($this->isCustomDateTimeCast($castType) || $this->isImmutableCustomDateTimeCast($castType)) {
+            $this->setDateFormat(Str::after($castType, ':'));
+        }
+
+        return parent::getCastType($key);
+    }
+
+    /** @inheritdoc */
     protected function getAttributeFromArray($key)
     {
+        $key = (string) $key;
+
         // Support keys in dot notation.
-        if (Str::contains($key, '.')) {
+        if (str_contains($key, '.')) {
             return Arr::get($this->attributes, $key);
         }
 
         return parent::getAttributeFromArray($key);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function setAttribute($key, $value)
     {
+        $key = (string) $key;
+
+        // Add casts
+        if ($this->hasCast($key)) {
+            $value = $this->castAttribute($key, $value);
+        }
+
         // Convert _id to ObjectID.
-        if ($key == '_id' && is_string($value)) {
+        if ($key === '_id' && is_string($value)) {
             $builder = $this->newBaseQueryBuilder();
 
             $value = $builder->convertKey($value);
-        } // Support keys in dot notation.
-        elseif (Str::contains($key, '.')) {
-            if (in_array($key, $this->getDates()) && $value) {
-                $value = $this->fromDateTime($value);
-            }
-
-            Arr::set($this->attributes, $key, $value);
-
-            return;
         }
+
+        // Support keys in dot notation.
+        if (str_contains($key, '.')) {
+            // Store to a temporary key, then move data to the actual key
+            $uniqueKey = uniqid($key);
+
+            parent::setAttribute($uniqueKey, $value);
+
+            Arr::set($this->attributes, $key, $this->attributes[$uniqueKey] ?? null);
+            unset($this->attributes[$uniqueKey]);
+
+            return $this;
+        }
+
+        // Setting an attribute cancels the unset operation.
+        unset($this->unset[$key]);
 
         return parent::setAttribute($key, $value);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
+    protected function asDecimal($value, $decimals)
+    {
+        try {
+            $value = (string) BigDecimal::of((string) $value)->toScale((int) $decimals, RoundingMode::HALF_UP);
+
+            return new Decimal128($value);
+        } catch (BrickMathException $e) {
+            throw new MathException('Unable to cast value to a decimal.', previous: $e);
+        }
+    }
+
+    /** @inheritdoc */
+    public function fromJson($value, $asObject = false)
+    {
+        if (! is_string($value)) {
+            $value = Json::encode($value);
+        }
+
+        return Json::decode($value, ! $asObject);
+    }
+
+    /** @inheritdoc */
+    protected function castAttribute($key, $value)
+    {
+        $castType = $this->getCastType($key);
+
+        return match ($castType) {
+            'immutable_custom_datetime','immutable_datetime' => str_starts_with($this->getCasts()[$key], 'immutable_date:') ?
+                $this->asDate($value)->toImmutable() :
+                $this->asDateTime($value)->toImmutable(),
+            default => parent::castAttribute($key, $value)
+        };
+    }
+
+    /** @inheritdoc */
     public function attributesToArray()
     {
         $attributes = parent::attributesToArray();
@@ -222,48 +333,57 @@ abstract class Model extends BaseModel
             }
         }
 
-        // Convert dot-notation dates.
-        foreach ($this->getDates() as $key) {
-            if (Str::contains($key, '.') && Arr::has($attributes, $key)) {
-                Arr::set($attributes, $key, (string) $this->asDateTime(Arr::get($attributes, $key)));
-            }
-        }
-
         return $attributes;
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function getCasts()
     {
         return $this->casts;
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
+    public function getDirty()
+    {
+        $dirty = parent::getDirty();
+
+        // The specified value in the $unset expression does not impact the operation.
+        if ($this->unset !== []) {
+            $dirty['$unset'] = $this->unset;
+        }
+
+        return $dirty;
+    }
+
+    /** @inheritdoc */
     public function originalIsEquivalent($key)
     {
         if (! array_key_exists($key, $this->original)) {
             return false;
         }
 
+        // Calling unset on an attribute marks it as "not equivalent".
+        if (isset($this->unset[$key])) {
+            return false;
+        }
+
         $attribute = Arr::get($this->attributes, $key);
-        $original = Arr::get($this->original, $key);
+        $original  = Arr::get($this->original, $key);
 
         if ($attribute === $original) {
             return true;
         }
 
-        if (null === $attribute) {
+        if ($attribute === null) {
             return false;
         }
 
         if ($this->isDateAttribute($key)) {
             $attribute = $attribute instanceof UTCDateTime ? $this->asDateTime($attribute) : $attribute;
-            $original = $original instanceof UTCDateTime ? $this->asDateTime($original) : $original;
+            $original  = $original instanceof UTCDateTime ? $this->asDateTime($original) : $original;
 
+            // Comparison on DateTimeInterface values
+            // phpcs:disable SlevomatCodingStandard.Operators.DisallowEqualOperators.DisallowedEqualOperator
             return $attribute == $original;
         }
 
@@ -276,13 +396,54 @@ abstract class Model extends BaseModel
             && strcmp((string) $attribute, (string) $original) === 0;
     }
 
+    /** @inheritdoc */
+    public function offsetUnset($offset): void
+    {
+        $offset = (string) $offset;
+
+        if (str_contains($offset, '.')) {
+            // Update the field in the subdocument
+            Arr::forget($this->attributes, $offset);
+        } else {
+            parent::offsetUnset($offset);
+
+            // Force unsetting even if the attribute is not set.
+            // End user can optimize DB calls by checking if the attribute is set before unsetting it.
+            $this->unset[$offset] = true;
+        }
+    }
+
+    /** @inheritdoc */
+    public function offsetSet($offset, $value): void
+    {
+        parent::offsetSet($offset, $value);
+
+        // Setting an attribute cancels the unset operation.
+        unset($this->unset[$offset]);
+    }
+
     /**
      * Remove one or more fields.
      *
-     * @param mixed $columns
-     * @return int
+     * @deprecated Use unset() instead.
+     *
+     * @param  string|string[] $columns
+     *
+     * @return void
      */
     public function drop($columns)
+    {
+        $this->unset($columns);
+    }
+
+    /**
+     * Remove one or more fields.
+     *
+     * @param  string|string[] $columns
+     *
+     * @return void
+     */
+    public function unset($columns)
     {
         $columns = Arr::wrap($columns);
 
@@ -290,17 +451,13 @@ abstract class Model extends BaseModel
         foreach ($columns as $column) {
             $this->__unset($column);
         }
-
-        // Perform unset only on current document
-        return $this->newQuery()->where($this->getKeyName(), $this->getKey())->unset($columns);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function push()
     {
-        if ($parameters = func_get_args()) {
+        $parameters = func_get_args();
+        if ($parameters) {
             $unique = false;
 
             if (count($parameters) === 3) {
@@ -325,8 +482,9 @@ abstract class Model extends BaseModel
     /**
      * Remove one or more values from an array.
      *
-     * @param string $column
-     * @param mixed $values
+     * @param  string $column
+     * @param  mixed  $values
+     *
      * @return mixed
      */
     public function pull($column, $values)
@@ -344,9 +502,8 @@ abstract class Model extends BaseModel
     /**
      * Append one or more values to the underlying attribute value and sync with original.
      *
-     * @param string $column
-     * @param array $values
-     * @param bool $unique
+     * @param  string $column
+     * @param  bool   $unique
      */
     protected function pushAttributeValues($column, array $values, $unique = false)
     {
@@ -369,8 +526,7 @@ abstract class Model extends BaseModel
     /**
      * Remove one or more values to the underlying attribute value and sync with original.
      *
-     * @param string $column
-     * @param array $values
+     * @param  string $column
      */
     protected function pullAttributeValues($column, array $values)
     {
@@ -391,18 +547,14 @@ abstract class Model extends BaseModel
         $this->syncOriginalAttribute($column);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function getForeignKey()
     {
-        return Str::snake(class_basename($this)).'_'.ltrim($this->primaryKey, '_');
+        return Str::snake(class_basename($this)) . '_' . ltrim($this->primaryKey, '_');
     }
 
     /**
      * Set the parent relation.
-     *
-     * @param \Illuminate\Database\Eloquent\Relations\Relation $relation
      */
     public function setParentRelation(Relation $relation)
     {
@@ -412,34 +564,34 @@ abstract class Model extends BaseModel
     /**
      * Get the parent relation.
      *
-     * @return \Illuminate\Database\Eloquent\Relations\Relation
+     * @return Relation
      */
     public function getParentRelation()
     {
         return $this->parentRelation;
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function newEloquentBuilder($query)
     {
         return new Builder($query);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
+    public function qualifyColumn($column)
+    {
+        return $column;
+    }
+
+    /** @inheritdoc */
     protected function newBaseQueryBuilder()
     {
         $connection = $this->getConnection();
 
-        return new QueryBuilder($connection, $connection->getPostProcessor());
+        return new QueryBuilder($connection, $connection->getQueryGrammar(), $connection->getPostProcessor());
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     protected function removeTableFromKey($key)
     {
         return $key;
@@ -461,13 +613,13 @@ abstract class Model extends BaseModel
 
             if ($relation instanceof QueueableCollection) {
                 foreach ($relation->getQueueableRelations() as $collectionValue) {
-                    $relations[] = $key.'.'.$collectionValue;
+                    $relations[] = $key . '.' . $collectionValue;
                 }
             }
 
             if ($relation instanceof QueueableEntity) {
                 foreach ($relation->getQueueableRelations() as $entityKey => $entityValue) {
-                    $relations[] = $key.'.'.$entityValue;
+                    $relations[] = $key . '.' . $entityValue;
                 }
             }
         }
@@ -484,7 +636,8 @@ abstract class Model extends BaseModel
     {
         $relations = $this->getRelations();
 
-        if ($parentRelation = $this->getParentRelation()) {
+        $parentRelation = $this->getParentRelation();
+        if ($parentRelation) {
             unset($relations[$parentRelation->getQualifiedForeignKeyName()]);
         }
 
@@ -495,7 +648,8 @@ abstract class Model extends BaseModel
      * Checks if column exists on a table.  As this is a document model, just return true.  This also
      * prevents calls to non-existent function Grammar::compileColumnListing().
      *
-     * @param string $key
+     * @param  string $key
+     *
      * @return bool
      */
     protected function isGuardableColumn($key)
@@ -503,16 +657,54 @@ abstract class Model extends BaseModel
         return true;
     }
 
-    /**
-     * @inheritdoc
-     */
-    public function __call($method, $parameters)
+    /** @inheritdoc */
+    protected function addCastAttributesToArray(array $attributes, array $mutatedAttributes)
     {
-        // Unset method
-        if ($method == 'unset') {
-            return call_user_func_array([$this, 'drop'], $parameters);
+        foreach ($this->getCasts() as $key => $castType) {
+            if (! Arr::has($attributes, $key) || Arr::has($mutatedAttributes, $key)) {
+                continue;
+            }
+
+            $originalValue = Arr::get($attributes, $key);
+
+            // Here we will cast the attribute. Then, if the cast is a date or datetime cast
+            // then we will serialize the date for the array. This will convert the dates
+            // to strings based on the date format specified for these Eloquent models.
+            $castValue = $this->castAttribute(
+                $key,
+                $originalValue,
+            );
+
+            // If the attribute cast was a date or a datetime, we will serialize the date as
+            // a string. This allows the developers to customize how dates are serialized
+            // into an array without affecting how they are persisted into the storage.
+            if ($castValue !== null && in_array($castType, ['date', 'datetime', 'immutable_date', 'immutable_datetime'])) {
+                $castValue = $this->serializeDate($castValue);
+            }
+
+            if ($castValue !== null && ($this->isCustomDateTimeCast($castType) || $this->isImmutableCustomDateTimeCast($castType))) {
+                $castValue = $castValue->format(explode(':', $castType, 2)[1]);
+            }
+
+            if ($castValue instanceof DateTimeInterface && $this->isClassCastable($key)) {
+                $castValue = $this->serializeDate($castValue);
+            }
+
+            if ($castValue !== null && $this->isClassSerializable($key)) {
+                $castValue = $this->serializeClassCastableAttribute($key, $castValue);
+            }
+
+            if ($this->isEnumCastable($key) && (! $castValue instanceof Arrayable)) {
+                $castValue = $castValue !== null ? $this->getStorableEnumValue($castValue) : null;
+            }
+
+            if ($castValue instanceof Arrayable) {
+                $castValue = $castValue->toArray();
+            }
+
+            Arr::set($attributes, $key, $castValue);
         }
 
-        return parent::__call($method, $parameters);
+        return $attributes;
     }
 }

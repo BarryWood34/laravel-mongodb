@@ -1,19 +1,28 @@
 <?php
 
-namespace Jenssegers\Mongodb\Relations;
+declare(strict_types=1);
+
+namespace MongoDB\Laravel\Relations;
 
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Model as EloquentModel;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Pagination\Paginator;
 use MongoDB\BSON\ObjectID;
+use MongoDB\Driver\Exception\LogicException;
+use MongoDB\Laravel\Eloquent\Model as MongoDBModel;
+
+use function array_key_exists;
+use function array_values;
+use function count;
+use function in_array;
+use function is_array;
+use function method_exists;
+use function throw_if;
 
 class EmbedsMany extends EmbedsOneOrMany
 {
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function initRelation(array $models, $relation)
     {
         foreach ($models as $model) {
@@ -23,9 +32,7 @@ class EmbedsMany extends EmbedsOneOrMany
         return $models;
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function getResults()
     {
         return $this->toCollection($this->getEmbedded());
@@ -34,14 +41,13 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Save a new model and attach it to the parent model.
      *
-     * @param Model $model
      * @return Model|bool
      */
     public function performInsert(Model $model)
     {
         // Generate a new key if needed.
-        if ($model->getKeyName() == '_id' && ! $model->getKey()) {
-            $model->setAttribute('_id', new ObjectID);
+        if ($model->getKeyName() === '_id' && ! $model->getKey()) {
+            $model->setAttribute('_id', new ObjectID());
         }
 
         // For deeply nested documents, let the parent handle the changes.
@@ -52,7 +58,7 @@ class EmbedsMany extends EmbedsOneOrMany
         }
 
         // Push the new model to the database.
-        $result = $this->getBaseQuery()->push($this->localKey, $model->getAttributes(), true);
+        $result = $this->toBase()->push($this->localKey, $model->getAttributes(), true);
 
         // Attach the model to its parent.
         if ($result) {
@@ -65,7 +71,6 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Save an existing model and attach it to the parent model.
      *
-     * @param Model $model
      * @return Model|bool
      */
     public function performUpdate(Model $model)
@@ -80,10 +85,10 @@ class EmbedsMany extends EmbedsOneOrMany
         // Get the correct foreign key value.
         $foreignKey = $this->getForeignKeyValue($model);
 
-        $values = $this->getUpdateValues($model->getDirty(), $this->localKey.'.$.');
+        $values = self::getUpdateValues($model->getDirty(), $this->localKey . '.$.');
 
         // Update document in database.
-        $result = $this->getBaseQuery()->where($this->localKey.'.'.$model->getKeyName(), $foreignKey)
+        $result = $this->toBase()->where($this->localKey . '.' . $model->getKeyName(), $foreignKey)
             ->update($values);
 
         // Attach the model to its parent.
@@ -97,7 +102,6 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Delete an existing model and detach it from the parent model.
      *
-     * @param Model $model
      * @return int
      */
     public function performDelete(Model $model)
@@ -112,7 +116,7 @@ class EmbedsMany extends EmbedsOneOrMany
         // Get the correct foreign key value.
         $foreignKey = $this->getForeignKeyValue($model);
 
-        $result = $this->getBaseQuery()->pull($this->localKey, [$model->getKeyName() => $foreignKey]);
+        $result = $this->toBase()->pull($this->localKey, [$model->getKeyName() => $foreignKey]);
 
         if ($result) {
             $this->dissociate($model);
@@ -124,7 +128,6 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Associate the model instance to the given parent, without saving it to the database.
      *
-     * @param Model $model
      * @return Model
      */
     public function associate(Model $model)
@@ -139,7 +142,8 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Dissociate the model instance from the given parent, without saving it to the database.
      *
-     * @param mixed $ids
+     * @param  mixed $ids
+     *
      * @return int
      */
     public function dissociate($ids = [])
@@ -152,7 +156,7 @@ class EmbedsMany extends EmbedsOneOrMany
 
         // Remove the document from the parent model.
         foreach ($records as $i => $record) {
-            if (in_array($record[$primaryKey], $ids)) {
+            if (array_key_exists($primaryKey, $record) && in_array($record[$primaryKey], $ids)) {
                 unset($records[$i]);
             }
         }
@@ -168,7 +172,8 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Destroy the embedded models for the given IDs.
      *
-     * @param mixed $ids
+     * @param  mixed $ids
+     *
      * @return int
      */
     public function destroy($ids = [])
@@ -193,10 +198,14 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Delete all embedded models.
      *
-     * @return int
+     * @param null $id
+     *
+     * @note The $id is not used to delete embedded models.
      */
-    public function delete()
+    public function delete($id = null): int
     {
+        throw_if($id !== null, new LogicException('The id parameter should not be used.'));
+
         // Overwrite the local key with an empty array.
         $result = $this->query->update([$this->localKey => []]);
 
@@ -210,7 +219,8 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Destroy alias.
      *
-     * @param mixed $ids
+     * @param  mixed $ids
+     *
      * @return int
      */
     public function detach($ids = [])
@@ -221,10 +231,9 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Save alias.
      *
-     * @param Model $model
-     * @return Model
+     * @return MongoDBModel
      */
-    public function attach(Model $model)
+    public function attach(MongoDBModel $model)
     {
         return $this->save($model);
     }
@@ -232,14 +241,15 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Associate a new model instance to the given parent, without saving it to the database.
      *
-     * @param Model $model
+     * @param  Model $model
+     *
      * @return Model
      */
     protected function associateNew($model)
     {
         // Create a new key if needed.
         if ($model->getKeyName() === '_id' && ! $model->getAttribute('_id')) {
-            $model->setAttribute('_id', new ObjectID);
+            $model->setAttribute('_id', new ObjectID());
         }
 
         $records = $this->getEmbedded();
@@ -253,7 +263,8 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Associate an existing model instance to the given parent, without saving it to the database.
      *
-     * @param Model $model
+     * @param  Model $model
+     *
      * @return Model
      */
     protected function associateExisting($model)
@@ -267,6 +278,7 @@ class EmbedsMany extends EmbedsOneOrMany
 
         // Replace the document in the parent model.
         foreach ($records as &$record) {
+            // @phpcs:ignore SlevomatCodingStandard.Operators.DisallowEqualOperators
             if ($record[$primaryKey] == $key) {
                 $record = $model->getAttributes();
                 break;
@@ -277,25 +289,26 @@ class EmbedsMany extends EmbedsOneOrMany
     }
 
     /**
-     * @param null $perPage
-     * @param array $columns
-     * @param string $pageName
-     * @param null $page
+     * @param  int|null $perPage
+     * @param  array    $columns
+     * @param  string   $pageName
+     * @param  int|null $page
+     *
      * @return \Illuminate\Contracts\Pagination\LengthAwarePaginator
      */
     public function paginate($perPage = null, $columns = ['*'], $pageName = 'page', $page = null)
     {
-        $page = $page ?: Paginator::resolveCurrentPage($pageName);
+        $page    = $page ?: Paginator::resolveCurrentPage($pageName);
         $perPage = $perPage ?: $this->related->getPerPage();
 
         $results = $this->getEmbedded();
         $results = $this->toCollection($results);
-        $total = $results->count();
-        $start = ($page - 1) * $perPage;
+        $total   = $results->count();
+        $start   = ($page - 1) * $perPage;
 
         $sliced = $results->slice(
             $start,
-            $perPage
+            $perPage,
         );
 
         return new LengthAwarePaginator(
@@ -305,37 +318,31 @@ class EmbedsMany extends EmbedsOneOrMany
             $page,
             [
                 'path' => Paginator::resolveCurrentPath(),
-            ]
+            ],
         );
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     protected function getEmbedded()
     {
         return parent::getEmbedded() ?: [];
     }
 
-    /**
-     * @inheritdoc
-     */
-    protected function setEmbedded($models)
+    /** @inheritdoc */
+    protected function setEmbedded($records)
     {
-        if (! is_array($models)) {
-            $models = [$models];
+        if (! is_array($records)) {
+            $records = [$records];
         }
 
-        return parent::setEmbedded(array_values($models));
+        return parent::setEmbedded(array_values($records));
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     public function __call($method, $parameters)
     {
         if (method_exists(Collection::class, $method)) {
-            return call_user_func_array([$this->getResults(), $method], $parameters);
+            return $this->getResults()->$method(...$parameters);
         }
 
         return parent::__call($method, $parameters);
@@ -344,11 +351,11 @@ class EmbedsMany extends EmbedsOneOrMany
     /**
      * Get the name of the "where in" method for eager loading.
      *
-     * @param \Illuminate\Database\Eloquent\Model $model
-     * @param string $key
+     * @param  string $key
+     *
      * @return string
      */
-    protected function whereInMethod(EloquentModel $model, $key)
+    protected function whereInMethod(Model $model, $key)
     {
         return 'whereIn';
     }
