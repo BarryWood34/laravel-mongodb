@@ -692,7 +692,7 @@ class Builder extends BaseBuilder
     /** @inheritdoc */
     public function insertGetId(array $values, $sequence = null)
     {
-        $options = $this->inheritConnectionOptions();
+        $result = $this->collection->insertOne($values);
 
         if (app()->environment('testing'))
         {
