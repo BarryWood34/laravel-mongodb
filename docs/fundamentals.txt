@@ -1,0 +1,30 @@
+.. _laravel_fundamentals:
+
+============
+Fundamentals
+============
+
+.. facet::
+   :name: genre
+   :values: reference
+
+.. meta::
+   :keywords: php framework, odm, concepts
+
+.. toctree::
+   :titlesonly:
+   :maxdepth: 1
+
+   /fundamentals/connection
+   /fundamentals/database-collection
+   /fundamentals/read-operations
+   /fundamentals/write-operations
+   /fundamentals/aggregation-builder
+
+Learn more about the following concepts related to the {+odm-long+}:
+
+- :ref:`laravel-fundamentals-connection`
+- :ref:`laravel-db-coll`
+- :ref:`laravel-fundamentals-read-ops`
+- :ref:`laravel-fundamentals-write-ops`
+- :ref:`laravel-aggregation-builder`

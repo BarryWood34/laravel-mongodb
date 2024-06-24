@@ -2,6 +2,11 @@
 
 declare(strict_types=1);
 
+namespace MongoDB\Laravel\Tests;
+
+use Illuminate\Support\Facades\Schema;
+use MongoDB\Laravel\Tests\Models\Location;
+
 class GeospatialTest extends TestCase
 {
     public function setUp(): void

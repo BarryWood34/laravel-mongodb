@@ -1,6 +1,8 @@
 <?php
 
-namespace Jenssegers\Mongodb\Auth;
+declare(strict_types=1);
+
+namespace MongoDB\Laravel\Auth;
 
 use DateTime;
 use DateTimeZone;
@@ -8,23 +10,22 @@ use Illuminate\Auth\Passwords\DatabaseTokenRepository as BaseDatabaseTokenReposi
 use Illuminate\Support\Facades\Date;
 use MongoDB\BSON\UTCDateTime;
 
+use function date_default_timezone_get;
+use function is_array;
+
 class DatabaseTokenRepository extends BaseDatabaseTokenRepository
 {
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     protected function getPayload($email, $token)
     {
         return [
             'email' => $email,
             'token' => $this->hasher->make($token),
-            'created_at' => new UTCDateTime(Date::now()->format('Uv')),
+            'created_at' => new UTCDateTime(Date::now()),
         ];
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     protected function tokenExpired($createdAt)
     {
         $createdAt = $this->convertDateTime($createdAt);
@@ -32,9 +33,7 @@ class DatabaseTokenRepository extends BaseDatabaseTokenRepository
         return parent::tokenExpired($createdAt);
     }
 
-    /**
-     * @inheritdoc
-     */
+    /** @inheritdoc */
     protected function tokenRecentlyCreated($createdAt)
     {
         $createdAt = $this->convertDateTime($createdAt);
@@ -50,7 +49,7 @@ class DatabaseTokenRepository extends BaseDatabaseTokenRepository
             $date->setTimezone(new DateTimeZone(date_default_timezone_get()));
             $createdAt = $date->format('Y-m-d H:i:s');
         } elseif (is_array($createdAt) && isset($createdAt['date'])) {
-            $date = new DateTime($createdAt['date'], new DateTimeZone(isset($createdAt['timezone']) ? $createdAt['timezone'] : 'UTC'));
+            $date = new DateTime($createdAt['date'], new DateTimeZone($createdAt['timezone'] ?? 'UTC'));
             $date->setTimezone(new DateTimeZone(date_default_timezone_get()));
             $createdAt = $date->format('Y-m-d H:i:s');
         }

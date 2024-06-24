@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 return [
 
     'default' => env('QUEUE_CONNECTION'),
@@ -16,7 +18,7 @@ return [
     ],
 
     'failed' => [
-        'database' => env('MONGO_DATABASE'),
+        'database' => env('MONGODB_DATABASE'),
         'driver' => 'mongodb',
         'table' => 'failed_jobs',
     ],

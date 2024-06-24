@@ -2,15 +2,36 @@
 
 declare(strict_types=1);
 
+namespace MongoDB\Laravel\Tests;
+
+use DateTime;
+use DateTimeImmutable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\LazyCollection;
-use Jenssegers\Mongodb\Collection;
-use Jenssegers\Mongodb\Query\Builder;
+use Illuminate\Support\Str;
+use Illuminate\Testing\Assert;
+use InvalidArgumentException;
 use MongoDB\BSON\ObjectId;
 use MongoDB\BSON\Regex;
 use MongoDB\BSON\UTCDateTime;
 use MongoDB\Driver\Cursor;
+use MongoDB\Driver\Monitoring\CommandFailedEvent;
+use MongoDB\Driver\Monitoring\CommandStartedEvent;
+use MongoDB\Driver\Monitoring\CommandSubscriber;
+use MongoDB\Driver\Monitoring\CommandSucceededEvent;
+use MongoDB\Laravel\Collection;
+use MongoDB\Laravel\Query\Builder;
+use MongoDB\Laravel\Tests\Models\Item;
+use MongoDB\Laravel\Tests\Models\User;
+use Stringable;
+
+use function count;
+use function key;
+use function md5;
+use function sort;
+use function strlen;
+use function strtotime;
 
 class QueryBuilderTest extends TestCase
 {
@@ -26,20 +47,20 @@ class QueryBuilderTest extends TestCase
             ['name' => 'Jane Doe', 'age' => 20],
         ]);
 
-        $user_id = (string) $user;
+        $userId = (string) $user;
 
         DB::collection('items')->insert([
-            ['name' => 'one thing', 'user_id' => $user_id],
-            ['name' => 'last thing', 'user_id' => $user_id],
-            ['name' => 'another thing', 'user_id' => $user_id],
-            ['name' => 'one more thing', 'user_id' => $user_id],
+            ['name' => 'one thing', 'user_id' => $userId],
+            ['name' => 'last thing', 'user_id' => $userId],
+            ['name' => 'another thing', 'user_id' => $userId],
+            ['name' => 'one more thing', 'user_id' => $userId],
         ]);
 
         $product = DB::collection('items')->first();
 
         $pid = (string) ($product['_id']);
 
-        DB::collection('items')->where('user_id', $user_id)->delete($pid);
+        DB::collection('items')->where('user_id', $userId)->delete($pid);
 
         $this->assertEquals(3, DB::collection('items')->count());
 
@@ -47,9 +68,9 @@ class QueryBuilderTest extends TestCase
 
         $pid = $product['_id'];
 
-        DB::collection('items')->where('user_id', $user_id)->delete($pid);
+        DB::collection('items')->where('user_id', $userId)->delete($pid);
 
-        DB::collection('items')->where('user_id', $user_id)->delete(md5('random-id'));
+        DB::collection('items')->where('user_id', $userId)->delete(md5('random-id'));
 
         $this->assertEquals(2, DB::collection('items')->count());
     }
@@ -129,6 +150,38 @@ class QueryBuilderTest extends TestCase
         $this->assertEquals('John Doe', $user['name']);
     }
 
+    public function testFindWithTimeout()
+    {
+        $id = DB::collection('users')->insertGetId(['name' => 'John Doe']);
+
+        $subscriber = new class implements CommandSubscriber {
+            public function commandStarted(CommandStartedEvent $event)
+            {
+                if ($event->getCommandName() !== 'find') {
+                    return;
+                }
+
+                // Expect the timeout to be converted to milliseconds
+                Assert::assertSame(1000, $event->getCommand()->maxTimeMS);
+            }
+
+            public function commandFailed(CommandFailedEvent $event)
+            {
+            }
+
+            public function commandSucceeded(CommandSucceededEvent $event)
+            {
+            }
+        };
+
+        DB::getMongoClient()->getManager()->addSubscriber($subscriber);
+        try {
+            DB::collection('users')->timeout(1)->find($id);
+        } finally {
+            DB::getMongoClient()->getManager()->removeSubscriber($subscriber);
+        }
+    }
+
     public function testFindNull()
     {
         $user = DB::collection('users')->find(null);
@@ -158,6 +211,38 @@ class QueryBuilderTest extends TestCase
         $jane = DB::collection('users')->where('name', 'Jane Doe')->first();
         $this->assertEquals(100, $john['age']);
         $this->assertEquals(20, $jane['age']);
+    }
+
+    public function testUpdateOperators()
+    {
+        DB::collection('users')->insert([
+            ['name' => 'Jane Doe', 'age' => 20],
+            ['name' => 'John Doe', 'age' => 19],
+        ]);
+
+        DB::collection('users')->where('name', 'John Doe')->update(
+            [
+                '$unset' => ['age' => 1],
+                'ageless' => true,
+            ],
+        );
+        DB::collection('users')->where('name', 'Jane Doe')->update(
+            [
+                '$inc' => ['age' => 1],
+                '$set' => ['pronoun' => 'she'],
+                'ageless' => false,
+            ],
+        );
+
+        $john = DB::collection('users')->where('name', 'John Doe')->first();
+        $jane = DB::collection('users')->where('name', 'Jane Doe')->first();
+
+        $this->assertArrayNotHasKey('age', $john);
+        $this->assertTrue($john['ageless']);
+
+        $this->assertEquals(21, $jane['age']);
+        $this->assertEquals('she', $jane['pronoun']);
+        $this->assertFalse($jane['ageless']);
     }
 
     public function testDelete()
@@ -299,6 +384,14 @@ class QueryBuilderTest extends TestCase
         ]);
         $user = DB::collection('users')->find($id);
         $this->assertCount(3, $user['messages']);
+    }
+
+    public function testPushRefuses2ndArgumentWhen1stIsAnArray()
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('2nd argument of MongoDB\Laravel\Query\Builder::push() must be "null" when 1st argument is an array. Got "string" instead.');
+
+        DB::collection('users')->push(['tags' => 'tag1'], 'tag2');
     }
 
     public function testPull()
@@ -500,7 +593,7 @@ class QueryBuilderTest extends TestCase
         DB::collection('items')->where('name', 'knife')
             ->update(
                 ['amount' => 1],
-                ['upsert' => true]
+                ['upsert' => true],
             );
 
         $this->assertEquals(1, DB::collection('items')->count());
@@ -508,7 +601,7 @@ class QueryBuilderTest extends TestCase
         Item::where('name', 'spoon')
             ->update(
                 ['amount' => 1],
-                ['upsert' => true]
+                ['upsert' => true],
             );
 
         $this->assertEquals(2, DB::collection('items')->count());
@@ -549,19 +642,19 @@ class QueryBuilderTest extends TestCase
     public function testDates()
     {
         DB::collection('users')->insert([
-            ['name' => 'John Doe', 'birthday' => new UTCDateTime(Date::parse('1980-01-01 00:00:00')->format('Uv'))],
-            ['name' => 'Robert Roe', 'birthday' => new UTCDateTime(Date::parse('1982-01-01 00:00:00')->format('Uv'))],
-            ['name' => 'Mark Moe', 'birthday' => new UTCDateTime(Date::parse('1983-01-01 00:00:00.1')->format('Uv'))],
-            ['name' => 'Frank White', 'birthday' => new UTCDateTime(Date::parse('1960-01-01 12:12:12.1')->format('Uv'))],
+            ['name' => 'John Doe', 'birthday' => new UTCDateTime(Date::parse('1980-01-01 00:00:00'))],
+            ['name' => 'Robert Roe', 'birthday' => new UTCDateTime(Date::parse('1982-01-01 00:00:00'))],
+            ['name' => 'Mark Moe', 'birthday' => new UTCDateTime(Date::parse('1983-01-01 00:00:00.1'))],
+            ['name' => 'Frank White', 'birthday' => new UTCDateTime(Date::parse('1960-01-01 12:12:12.1'))],
         ]);
 
         $user = DB::collection('users')
-            ->where('birthday', new UTCDateTime(Date::parse('1980-01-01 00:00:00')->format('Uv')))
+            ->where('birthday', new UTCDateTime(Date::parse('1980-01-01 00:00:00')))
             ->first();
         $this->assertEquals('John Doe', $user['name']);
 
         $user = DB::collection('users')
-            ->where('birthday', new UTCDateTime(Date::parse('1960-01-01 12:12:12.1')->format('Uv')))
+            ->where('birthday', new UTCDateTime(Date::parse('1960-01-01 12:12:12.1')))
             ->first();
         $this->assertEquals('Frank White', $user['name']);
 
@@ -569,7 +662,7 @@ class QueryBuilderTest extends TestCase
         $this->assertEquals('John Doe', $user['name']);
 
         $start = new UTCDateTime(1000 * strtotime('1950-01-01 00:00:00'));
-        $stop = new UTCDateTime(1000 * strtotime('1981-01-01 00:00:00'));
+        $stop  = new UTCDateTime(1000 * strtotime('1981-01-01 00:00:00'));
 
         $users = DB::collection('users')->whereBetween('birthday', [$start, $stop])->get();
         $this->assertCount(2, $users);
@@ -578,8 +671,8 @@ class QueryBuilderTest extends TestCase
     public function testImmutableDates()
     {
         DB::collection('users')->insert([
-            ['name' => 'John Doe', 'birthday' => new UTCDateTime(Date::parse('1980-01-01 00:00:00')->format('Uv'))],
-            ['name' => 'Robert Roe', 'birthday' => new UTCDateTime(Date::parse('1982-01-01 00:00:00')->format('Uv'))],
+            ['name' => 'John Doe', 'birthday' => new UTCDateTime(Date::parse('1980-01-01 00:00:00'))],
+            ['name' => 'Robert Roe', 'birthday' => new UTCDateTime(Date::parse('1982-01-01 00:00:00'))],
         ]);
 
         $users = DB::collection('users')->where('birthday', '=', new DateTimeImmutable('1980-01-01 00:00:00'))->get();
@@ -659,11 +752,11 @@ class QueryBuilderTest extends TestCase
         $results = DB::collection('items')->where('tags', 'size', 4)->get();
         $this->assertCount(1, $results);
 
-        $regex = new Regex('.*doe', 'i');
+        $regex   = new Regex('.*doe', 'i');
         $results = DB::collection('users')->where('name', 'regex', $regex)->get();
         $this->assertCount(2, $results);
 
-        $regex = new Regex('.*doe', 'i');
+        $regex   = new Regex('.*doe', 'i');
         $results = DB::collection('users')->where('name', 'regexp', $regex)->get();
         $this->assertCount(2, $results);
 
@@ -778,7 +871,7 @@ class QueryBuilderTest extends TestCase
     public function testHintOptions()
     {
         DB::collection('items')->insert([
-            ['name' => 'fork',  'tags' => ['sharp', 'pointy']],
+            ['name' => 'fork', 'tags' => ['sharp', 'pointy']],
             ['name' => 'spork', 'tags' => ['sharp', 'pointy', 'round', 'bowl']],
             ['name' => 'spoon', 'tags' => ['round', 'bowl']],
         ]);
@@ -811,5 +904,64 @@ class QueryBuilderTest extends TestCase
         foreach ($results as $i => $result) {
             $this->assertEquals($data[$i]['name'], $result['name']);
         }
+    }
+
+    public function testStringableColumn()
+    {
+        DB::collection('users')->insert([
+            ['name' => 'Jane Doe', 'age' => 36, 'birthday' => new UTCDateTime(new DateTime('1987-01-01 00:00:00'))],
+            ['name' => 'John Doe', 'age' => 28, 'birthday' => new UTCDateTime(new DateTime('1995-01-01 00:00:00'))],
+        ]);
+
+        $nameColumn = Str::of('name');
+        $this->assertInstanceOf(Stringable::class, $nameColumn, 'Ensure we are testing the feature with a Stringable instance');
+
+        $user = DB::collection('users')->where($nameColumn, 'John Doe')->first();
+        $this->assertEquals('John Doe', $user['name']);
+
+        // Test this other document to be sure this is not a random success to data order
+        $user = DB::collection('users')->where($nameColumn, 'Jane Doe')->orderBy('natural')->first();
+        $this->assertEquals('Jane Doe', $user['name']);
+
+        // With an operator
+        $user = DB::collection('users')->where($nameColumn, '!=', 'Jane Doe')->first();
+        $this->assertEquals('John Doe', $user['name']);
+
+        // whereIn and whereNotIn
+        $user = DB::collection('users')->whereIn($nameColumn, ['John Doe'])->first();
+        $this->assertEquals('John Doe', $user['name']);
+
+        $user = DB::collection('users')->whereNotIn($nameColumn, ['John Doe'])->first();
+        $this->assertEquals('Jane Doe', $user['name']);
+
+        $ageColumn = Str::of('age');
+        // whereBetween and whereNotBetween
+        $user = DB::collection('users')->whereBetween($ageColumn, [30, 40])->first();
+        $this->assertEquals('Jane Doe', $user['name']);
+
+        // whereBetween and whereNotBetween
+        $user = DB::collection('users')->whereNotBetween($ageColumn, [30, 40])->first();
+        $this->assertEquals('John Doe', $user['name']);
+
+        $birthdayColumn = Str::of('birthday');
+        // whereDate
+        $user = DB::collection('users')->whereDate($birthdayColumn, '1995-01-01')->first();
+        $this->assertEquals('John Doe', $user['name']);
+
+        $user = DB::collection('users')->whereDate($birthdayColumn, '<', '1990-01-01')
+            ->orderBy($birthdayColumn, 'desc')->first();
+        $this->assertEquals('Jane Doe', $user['name']);
+
+        $user = DB::collection('users')->whereDate($birthdayColumn, '>', '1990-01-01')
+            ->orderBy($birthdayColumn, 'asc')->first();
+        $this->assertEquals('John Doe', $user['name']);
+
+        $user = DB::collection('users')->whereDate($birthdayColumn, '!=', '1987-01-01')->first();
+        $this->assertEquals('John Doe', $user['name']);
+
+        // increment
+        DB::collection('users')->where($ageColumn, 28)->increment($ageColumn, 1);
+        $user = DB::collection('users')->where($ageColumn, 29)->first();
+        $this->assertEquals('John Doe', $user['name']);
     }
 }
