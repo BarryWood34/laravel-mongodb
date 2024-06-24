@@ -703,6 +703,7 @@ class Builder extends BaseBuilder
             if ($sequence === null) {
                 $sequence = '_id';
             }
+        }
 
         if (! $result->isAcknowledged()) {
             return null;
