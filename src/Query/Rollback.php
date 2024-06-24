@@ -1,6 +1,6 @@
 <?php
 
-namespace Jenssegers\Mongodb\Query;
+namespace MongoDB\Laravel\Query;
 
 class Rollback
 {
